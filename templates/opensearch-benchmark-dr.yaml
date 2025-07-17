@@ -60,9 +60,10 @@ Parameters:
       - m5.2xlarge
     Description: EC2 instance type for the benchmark runner
 
-  #KeyPairName:
-  #  Type: AWS::EC2::KeyPair::KeyName
-  #  Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+  AllowedSSHCIDR:
+    Type: String
+    Default: 10.0.0.0/24
+    Description: CIDR block allowed to access SSH (should be restricted to your IP or VPN range)
   
   ClusterConfig:
     Type: String
@@ -91,7 +92,51 @@ Resources:
       EnableDnsSupport: true
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-VPC
+          Value: OpenSearch-Benchmark-DR-VPC
+
+  # VPC Flow Logs for network traffic monitoring
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsRole.Arn
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Sub "/${AWS::StackName}/vpc-flow-logs"
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: Name
+          Value: OpenSearch-Benchmark-DR-VPC-FlowLogs
+
+  VPCFlowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/vpc-flow-logs"
+      RetentionInDays: 14
+
+  VPCFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VPCFlowLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${AWS::StackName}/vpc-flow-logs:*"
 
   VPCPeeringConnection:
     Type: AWS::EC2::VPCPeeringConnection
@@ -102,13 +147,15 @@ Resources:
       Tags:
         - Key: Name
           Value: 'Cross-Region-VPC-Peering'
+        - Key: Description
+          Value: 'Peering connection between primary and DR VPCs for OpenSearch replication'
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
     Properties:
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-IGW
+          Value: OpenSearch-Benchmark-DR-IGW
         - Key: Project
           Value: OpenSearch-Benchmark
 
@@ -124,10 +171,10 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet1CIDR
       AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: false  # Changed to false to prevent automatic public IP assignment
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-Public-Subnet
+          Value: OpenSearch-Benchmark-DR-Public-Subnet
         - Key: Project
           Value: OpenSearch-Benchmark
 
@@ -139,7 +186,7 @@ Resources:
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-Private-Subnet-1
+          Value: OpenSearch-Benchmark-DR-Private-Subnet-1
         - Key: Project
           Value: OpenSearch-Benchmark
 
@@ -151,7 +198,7 @@ Resources:
       AvailabilityZone: !Select [1, !GetAZs '']
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-Private-Subnet-2
+          Value: OpenSearch-Benchmark-DR-Private-Subnet-2
         - Key: Project
           Value: OpenSearch-Benchmark
 
@@ -161,7 +208,7 @@ Resources:
       VpcId: !Ref VPC
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-Route-Table
+          Value: OpenSearch-Benchmark-DR-Route-Table
         - Key: Project
           Value: OpenSearch-Benchmark
 
@@ -187,36 +234,65 @@ Resources:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
 
-  # Security Groups
+  # Security Groups with proper descriptions and restricted access
   BenchmarkSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group for benchmark EC2 instance
+      GroupDescription: Security group for benchmark EC2 instance in DR region
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 22
           ToPort: 22
+          CidrIp: !Ref AllowedSSHCIDR
+          Description: "Allows SSH access from specified CIDR range for administration"
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
+          Description: "Allows HTTPS outbound traffic for package downloads and API calls"
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: "Allows HTTP outbound traffic for package downloads"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId: !Ref OpenSearchSecurityGroup
+          Description: "Allows HTTPS traffic to OpenSearch domain"
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-EC2-SG
+          Value: OpenSearch-Benchmark-DR-EC2-SG
         - Key: Project
           Value: OpenSearch-Benchmark
 
   OpenSearchSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Security group for OpenSearch domain
+      GroupDescription: Security group for OpenSearch domain in DR region
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           SourceSecurityGroupId: !Ref BenchmarkSecurityGroup
+          Description: "Allows HTTPS access from benchmark instances"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: "Allows HTTPS access from primary VPC for replication"
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.0.0.0/16
+          Description: "Allows HTTPS outbound traffic to primary VPC for replication"
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-Domain-SG
+          Value: OpenSearch-Benchmark-DR-Domain-SG
         - Key: Project
           Value: OpenSearch-Benchmark
 
@@ -226,7 +302,7 @@ Resources:
     Properties:
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-IAM-Role
+          Value: OpenSearch-Benchmark-DR-IAM-Role
         - Key: Project
           Value: OpenSearch-Benchmark
       AssumeRolePolicyDocument:
@@ -270,7 +346,40 @@ Resources:
       Roles:
         - !Ref BenchmarkRole
 
-  # OpenSearch Domain
+  # OpenSearch Domain with logging enabled
+  OpenSearchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/opensearch/${OpenSearchDomainName}"
+      RetentionInDays: 30
+
+  OpenSearchLogPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: OpenSearchLogPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:PutLogEventsBatch
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/opensearch/${OpenSearchDomainName}:*"
+      Roles:
+        - !Ref OpenSearchLogRole
+
+  OpenSearchLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: es.amazonaws.com
+            Action: sts:AssumeRole
+
   OpenSearchDomain:
     Type: AWS::OpenSearchService::Domain
     Properties:
@@ -280,14 +389,14 @@ Resources:
           - 
             Effect: Allow
             Principal:
-              AWS: '*'
+              AWS: !GetAtt BenchmarkRole.Arn
             Action: 
               - es:*
             Resource: !Sub arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}/*
       DomainName: !Ref OpenSearchDomainName
       Tags:
         - Key: Name
-          Value: OpenSearch-Benchmark-Domain
+          Value: OpenSearch-Benchmark-DR-Domain
         - Key: Project
           Value: OpenSearch-Benchmark
       EngineVersion: OpenSearch_2.5
@@ -348,22 +457,34 @@ Resources:
         MasterUserOptions:
           MasterUserName: admin
           MasterUserPassword: Admin123!
+      LogPublishingOptions:
+        ES_APPLICATION_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
+        AUDIT_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
+        INDEX_SLOW_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
+        SEARCH_SLOW_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
 
   # EC2 Instance for Benchmark
   BenchmarkInstance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref InstanceType
-      #ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
       ImageId: !Ref LatestAmiId
-      #KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnet1
       BlockDeviceMappings:
-        - DeviceName: "/dev/xvda" # Example device name, adjust as needed
+        - DeviceName: "/dev/xvda"
           Ebs:
-            DeleteOnTermination: "true" # Delete volume on instance termination
+            DeleteOnTermination: "true"
             VolumeSize: "100" 
             VolumeType: "gp3"
+            Encrypted: true  # Added encryption for EBS volumes
       SecurityGroupIds:
         - !Ref BenchmarkSecurityGroup
       IamInstanceProfile: !Ref BenchmarkInstanceProfile
@@ -394,8 +515,8 @@ Resources:
           echo "********* Git installed **********"
 
           # Create result Directory   
-          # RESULT_DIR="/home/ec2-user/results"     
-          # mkdir -p /home/ec2-user/results
+          RESULT_DIR="/home/ec2-user/results"     
+          mkdir -p "${RESULT_DIR}"
 
           # Create test scripts directory
           mkdir -p /home/ec2-user/dr-scripts
@@ -433,8 +554,8 @@ Resources:
           # Create outbound connection
           echo "Creating outbound connection..."
           CONN_ID=$(aws opensearch create-outbound-connection \
-              --local-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"$OWNER_ID\", \"DomainName\": \"$DR_DOMAIN\", \"Region\": \"$DR_REGION\"}}" \
-              --remote-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"$OWNER_ID\", \"DomainName\": \"$PRI_DOMAIN\", \"Region\": \"$PRI_REGION\"}}" \
+              --local-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"${OWNER_ID}\", \"DomainName\": \"${DR_DOMAIN}\", \"Region\": \"${DR_REGION}\"}}" \
+              --remote-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"${OWNER_ID}\", \"DomainName\": \"${PRI_DOMAIN}\", \"Region\": \"${PRI_REGION}\"}}" \
               --connection-alias "dr_connection" \
               --connection-mode "DIRECT" \
               --query 'ConnectionId' \
@@ -445,7 +566,7 @@ Resources:
           
           # Accept inbound connection
           echo "Accepting inbound connection..."
-          aws opensearch accept-inbound-connection --connection-id $CONN_ID --region $PRI_REGION
+          aws opensearch accept-inbound-connection --connection-id "${CONN_ID}" --region "${PRI_REGION}"
           
           # Wait for connection establishment
           sleep 30
@@ -455,6 +576,7 @@ Resources:
           curl -XPOST "https://${OpenSearchDomain.DomainEndpoint}/_plugins/_replication/_autofollow" \
               -H "Content-Type: application/json" \
               -u "admin:Admin123!" \
+              -k \
               -d '{
                   "leader_alias": "dr_connection",
                   "name": "dr-replication",
@@ -489,22 +611,22 @@ Resources:
           
           # Test scenarios
           run_dr_test() {
-              local test_name=$1
-              local test_function=$2
+              local test_name="$1"
+              local test_function="$2"
               
               echo "========================================="
-              echo "Running DR Test: $test_name"
+              echo "Running DR Test: ${test_name}"
               echo "========================================="
               
-              $test_function
+              ${test_function}
               
-              echo "Test completed: $test_name"
+              echo "Test completed: ${test_name}"
               echo ""
           }
           
           # Test 1: Data Integrity Validation
           test_data_integrity() {
-              echo "Creating test index in primary region..." | tee -a "$LOG_FILE"
+              echo "Creating test index in primary region..." | tee -a "${LOG_FILE}"
               
               # Create test index with sample data
               curl -X PUT "https://${PrimaryDomainEndpoint}/dr-test-index" \
@@ -536,19 +658,19 @@ Resources:
               PRIMARY_COUNT=$(curl -s "https://${PrimaryDomainEndpoint}/dr-test-index/_count" \
                   -u "admin:Admin123!" | jq '.count')
               
-              SECONDARY_COUNT=$(curl -s "$DOMAIN_ENDPOINT_DR/dr-test-index/_count" \
+              SECONDARY_COUNT=$(curl -s "${DOMAIN_ENDPOINT_DR}/dr-test-index/_count" \
                   -u "admin:Admin123!" | jq '.count')
               
-              if [ "$PRIMARY_COUNT" -eq "$SECONDARY_COUNT" ]; then
-                  echo "✓ Data integrity test passed: $PRIMARY_COUNT documents replicated" | tee -a "$LOG_FILE"
+              if [ "${PRIMARY_COUNT}" -eq "${SECONDARY_COUNT}" ]; then
+                  echo "✓ Data integrity test passed: ${PRIMARY_COUNT} documents replicated" | tee -a "${LOG_FILE}"
               else
-                  echo "✗ Data integrity test failed: Primary=$PRIMARY_COUNT, Secondary=$SECONDARY_COUNT" | tee -a "$LOG_FILE"
+                  echo "✗ Data integrity test failed: Primary=${PRIMARY_COUNT}, Secondary=${SECONDARY_COUNT}" | tee -a "${LOG_FILE}"
               fi
           }
           
           # Test 2: Replication Lag Measurement
           test_replication_lag() {
-              echo "Measuring replication lag..." | tee -a "$LOG_FILE"
+              echo "Measuring replication lag..." | tee -a "${LOG_FILE}"
               
               # Insert timestamped document in primary
               TIMESTAMP=$(date -u +%s%3N)
@@ -556,28 +678,28 @@ Resources:
                   -H "Content-Type: application/json" \
                   -u "admin:Admin123!" \
                   -d '{
-                      "timestamp": '"$TIMESTAMP"',
+                      "timestamp": '"${TIMESTAMP}"',
                       "test": "replication-lag"
                   }'
               
               # Poll secondary until document appears
               START_TIME=$(date +%s)
               while true; do
-                  RESULT=$(curl -s "$DOMAIN_ENDPOINT_DR/lag-test/_search" \
+                  RESULT=$(curl -s "${DOMAIN_ENDPOINT_DR}/lag-test/_search" \
                       -H "Content-Type: application/json" \
                       -u "admin:Admin123!" \
                       -d '{
                           "query": {
                               "match": {
-                                  "timestamp": '"$TIMESTAMP"'
+                                  "timestamp": '"${TIMESTAMP}"'
                               }
                           }
                       }' | jq '.hits.total.value')
                   
-                  if [ "$RESULT" -gt 0 ]; then
+                  if [ "${RESULT}" -gt 0 ]; then
                       END_TIME=$(date +%s)
                       LAG=$((END_TIME - START_TIME))
-                      echo "Replication lag: $LAG seconds"
+                      echo "Replication lag: ${LAG} seconds"
                       break
                   fi
                   
@@ -587,19 +709,19 @@ Resources:
           
           # Test 3: Simulated Failover
           test_failover_simulation() {
-              echo "Simulating failover scenario..." | tee -a "$LOG_FILE"
+              echo "Simulating failover scenario..." | tee -a "${LOG_FILE}"
               
               # Stop replication
-              if ! curl -X POST "$DOMAIN_ENDPOINT_DR/_plugins/_replication/dr-test-index/_stop" \
+              if ! curl -X POST "${DOMAIN_ENDPOINT_DR}/_plugins/_replication/dr-test-index/_stop" \
                   -H "Content-Type: application/json" \
                   -u "admin:Admin123!" \
                   -d '{}'; then
-                  echo "❌ Failed to stop replication" | tee -a "$LOG_FILE"
+                  echo "❌ Failed to stop replication" | tee -a "${LOG_FILE}"
                   return 1
               fi
               
               # Make secondary writable
-              if ! curl -XPUT "$DOMAIN_ENDPOINT_DR/_cluster/settings" \
+              if ! curl -XPUT "${DOMAIN_ENDPOINT_DR}/_cluster/settings" \
                   -H "Content-Type: application/json" \
                   -u "admin:Admin123!" \
                   -d '{
@@ -607,59 +729,59 @@ Resources:
                           "cluster.blocks.read_only": false
                       }
                   }'; then
-                  echo "❌ Failed to make secondary cluster writable" | tee -a "$LOG_FILE"
+                  echo "❌ Failed to make secondary cluster writable" | tee -a "${LOG_FILE}"
                   return 1
               fi
               
               # Test write to secondary
-              if ! curl -X POST "$DOMAIN_ENDPOINT_DR/dr-test-index/_doc" \
+              if ! curl -X POST "${DOMAIN_ENDPOINT_DR}/dr-test-index/_doc" \
                   -H "Content-Type: application/json" \
                   -u "admin:Admin123!" \
                   -d '{
                       "timestamp": "'"$(date -u +%Y-%m-%dT%H:%M:%SZ)"'",
                       "status": "failover-successful"
                   }'; then
-                  echo "❌ Failed to write to secondary cluster" | tee -a "$LOG_FILE"
+                  echo "❌ Failed to write to secondary cluster" | tee -a "${LOG_FILE}"
                   return 1
               fi
               
-              echo "✓ Failover simulation completed successfully" | tee -a "$LOG_FILE"
+              echo "✓ Failover simulation completed successfully" | tee -a "${LOG_FILE}"
               return 0
           }
           
           # Main test execution
           main() {
-              echo "Starting DR testing suite..." | tee -a "$LOG_FILE"
+              echo "Starting DR testing suite..." | tee -a "${LOG_FILE}"
               local exit_code=0
               
               # Run tests in sequence with error handling
-              echo "----------------------------------------" | tee -a "$LOG_FILE"
+              echo "----------------------------------------" | tee -a "${LOG_FILE}"
               if ! test_data_integrity; then
-                  echo "❌ Data Integrity Test failed" | tee -a "$LOG_FILE"
+                  echo "❌ Data Integrity Test failed" | tee -a "${LOG_FILE}"
                   exit_code=1
               fi
               
-              echo "----------------------------------------" | tee -a "$LOG_FILE"
+              echo "----------------------------------------" | tee -a "${LOG_FILE}"
               if ! test_replication_lag; then
-                  echo "❌ Replication Lag Test failed" | tee -a "$LOG_FILE"
+                  echo "❌ Replication Lag Test failed" | tee -a "${LOG_FILE}"
                   exit_code=1
               fi
               
-              echo "----------------------------------------" | tee -a "$LOG_FILE"
+              echo "----------------------------------------" | tee -a "${LOG_FILE}"
               if ! test_failover_simulation; then
-                  echo "❌ Failover Simulation Test failed" | tee -a "$LOG_FILE"
+                  echo "❌ Failover Simulation Test failed" | tee -a "${LOG_FILE}"
                   exit_code=1
               fi
               
               # Final status
-              echo "----------------------------------------" | tee -a "$LOG_FILE"
-              if [ $exit_code -eq 0 ]; then
-                  echo "✅ All tests completed successfully" | tee -a "$LOG_FILE"
+              echo "----------------------------------------" | tee -a "${LOG_FILE}"
+              if [ ${exit_code} -eq 0 ]; then
+                  echo "✅ All tests completed successfully" | tee -a "${LOG_FILE}"
               else
-                  echo "❌ Some tests failed - check logs: $LOG_FILE" | tee -a "$LOG_FILE"
+                  echo "❌ Some tests failed - check logs: ${LOG_FILE}" | tee -a "${LOG_FILE}"
               fi
               
-              return $exit_code
+              return ${exit_code}
           }
           
           main "$@"          
@@ -680,73 +802,19 @@ Resources:
           DOMAIN_ENDPOINT_DR="https://${OpenSearchDomain.DomainEndpoint}"
 
           # Get all follower indices and store them in a variable
-          follower_indices=$(curl -s -X GET "https://vpc-benchmark-domain-dr-nhwhhsxlhgiw2shj4qt2mm63eq.us-west-2.es.amazonaws.com/_plugins/_replication/follower_stats" \
+          follower_indices=$(curl -s -X GET "${DOMAIN_ENDPOINT_DR}/_plugins/_replication/follower_stats" \
           -u "admin:Admin123!" \
           -H "Content-Type: application/json" \
           | jq -r '.index_stats | keys[]')
 
           # Loop through each follower index
-          for index in $follower_indices; do
+          for index in ${follower_indices}; do
               # Stop replication
-              curl -X POST "$DOMAIN_ENDPOINT_DR/_plugins/_replication/$index/_stop" \
+              curl -X POST "${DOMAIN_ENDPOINT_DR}/_plugins/_replication/${index}/_stop" \
                   -H "Content-Type: application/json" \
                   -u "admin:Admin123!" \
                   -d '{}'
               
               # Remove follower index
-              curl -X DELETE "$DOMAIN_ENDPOINT_DR/$index" -u "admin:Admin123!"
-              curl -X DELETE "https://${PrimaryDomainEndpoint}/$index" -u "admin:Admin123!"
-
-          done
-
-          echo "Stopped all replication"
-
-          # Get connection ID
-          CONN_ID=$(aws opensearch describe-outbound-connections \
-          --query 'Connections[?ConnectionAlias==`dr_connection`].ConnectionId' \
-          --output text)
-          
-          # Delete connection ID
-          aws opensearch delete-outbound-connection --connection-id $CONN_ID --region $DR_REGION
-          EOL
-
-          chmod +x crr-delete.sh
-
-          echo "CCR connection delete completed"
-   
-      Tags:
-        - Key: Name
-          Value: OpenSearch-Benchmark-Instance
-
-Conditions:
-  IsStandardConfig: !Equals [!Ref ClusterConfig, 'standard']
-  IsMinimalConfig: !Equals [!Ref ClusterConfig, 'minimal']
-  IsCoordinatorConfig: !Equals [!Ref ClusterConfig, 'coordinator']
-
-Mappings:
-  RegionMap:
-    us-east-1:
-      AMI: resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
-    us-east-2:
-      AMI: ami-02d1e544b84bf7502
-    us-west-1:
-      AMI: ami-0d9858aa3c6322f73
-    us-west-2:
-      AMI: ami-098e42ae54c764c35
-
-Outputs:
-  BenchmarkInstancePublicIP:
-    Description: Public IP of the benchmark EC2 instance
-    Value: !GetAtt BenchmarkInstance.PublicIp
-
-  OpenSearchDomainEndpoint:
-    Description: Endpoint of the OpenSearch domain
-    Value: !GetAtt OpenSearchDomain.DomainEndpoint
-
-  VPCPeeringConnectionID:
-    Description: VPC peering connection ID
-    Value: !Ref VPCPeeringConnection
-
-  #SSHCommand:
-  #  Description: SSH command to connect to the benchmark instance
-  #  Value: !Sub ssh -i ${KeyPairName}.pem ec2-user@${BenchmarkInstance.PublicIp}
+              curl -X DELETE "${DOMAIN_ENDPOINT_DR}/${index}" -u "admin:Admin123!"
+              curl -X DELETE "https://${PrimaryDomainEndpoint}/${index}" -u "admin:Admin123!"

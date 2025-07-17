@@ -45,7 +45,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Check if required parameters are provided
-if [ -z "$PRI_DOMAIN" ] || [ -z "$DR_DOMAIN" ] || [ -z "$PRI_REGION" ] || [ -z "$DR_REGION" ] || [ -z "$OWNER_ID" ]; then
+if [ -z "${PRI_DOMAIN}" ] || [ -z "${DR_DOMAIN}" ] || [ -z "${PRI_REGION}" ] || [ -z "${DR_REGION}" ] || [ -z "${OWNER_ID}" ]; then
   echo "Error: Required parameters missing."
   echo "Usage: $0 --pri-domain <primary-domain> --dr-domain <dr-domain> --pri-region <primary-region> --dr-region <dr-region> --owner-id <aws-account-id>"
   exit 1
@@ -69,22 +69,22 @@ retry() {
     return 1
 }
 
-echo "Setting up cross-region replication between $PRI_DOMAIN and $DR_DOMAIN"
-echo "Primary region: $PRI_REGION"
-echo "DR region: $DR_REGION"
-echo "AWS Account ID: $OWNER_ID"
+echo "Setting up cross-region replication between ${PRI_DOMAIN} and ${DR_DOMAIN}"
+echo "Primary region: ${PRI_REGION}"
+echo "DR region: ${DR_REGION}"
+echo "AWS Account ID: ${OWNER_ID}"
 
 # Create outbound connection
 echo "Creating outbound connection..."
 CONN_ID=$(aws opensearch create-outbound-connection \
-    --local-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"$OWNER_ID\", \"DomainName\": \"$DR_DOMAIN\", \"Region\": \"$DR_REGION\"}}" \
-    --remote-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"$OWNER_ID\", \"DomainName\": \"$PRI_DOMAIN\", \"Region\": \"$PRI_REGION\"}}" \
+    --local-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"${OWNER_ID}\", \"DomainName\": \"${DR_DOMAIN}\", \"Region\": \"${DR_REGION}\"}}" \
+    --remote-domain-info "{\"AWSDomainInformation\": {\"OwnerId\": \"${OWNER_ID}\", \"DomainName\": \"${PRI_DOMAIN}\", \"Region\": \"${PRI_REGION}\"}}" \
     --connection-alias "dr_connection" \
     --connection-mode "DIRECT" \
     --query 'ConnectionId' \
     --output text)
 
-echo "Connection ID: $CONN_ID"
+echo "Connection ID: ${CONN_ID}"
 
 # Wait for connection creation
 echo "Waiting for connection creation (30 seconds)..."
@@ -92,7 +92,7 @@ sleep 30
 
 # Accept inbound connection
 echo "Accepting inbound connection..."
-aws opensearch accept-inbound-connection --connection-id $CONN_ID --region $PRI_REGION
+aws opensearch accept-inbound-connection --connection-id "${CONN_ID}" --region "${PRI_REGION}"
 
 # Wait for connection establishment
 echo "Waiting for connection establishment (30 seconds)..."
@@ -100,30 +100,30 @@ sleep 30
 
 # Get DR domain endpoint
 DR_ENDPOINT=$(aws opensearch describe-domain \
-    --domain-name $DR_DOMAIN \
-    --region $DR_REGION \
+    --domain-name "${DR_DOMAIN}" \
+    --region "${DR_REGION}" \
     --query 'DomainStatus.Endpoints.vpc' \
     --output text)
 
-if [ -z "$DR_ENDPOINT" ]; then
+if [ -z "${DR_ENDPOINT}" ]; then
     echo "Failed to get DR domain endpoint. Trying alternative method..."
     DR_ENDPOINT=$(aws opensearch describe-domain \
-        --domain-name $DR_DOMAIN \
-        --region $DR_REGION \
+        --domain-name "${DR_DOMAIN}" \
+        --region "${DR_REGION}" \
         --query 'DomainStatus.Endpoint' \
         --output text)
 fi
 
-if [ -z "$DR_ENDPOINT" ]; then
+if [ -z "${DR_ENDPOINT}" ]; then
     echo "Error: Could not retrieve DR domain endpoint"
     exit 1
 fi
 
-echo "DR domain endpoint: $DR_ENDPOINT"
+echo "DR domain endpoint: ${DR_ENDPOINT}"
 
 # Start autofollow rule
 echo "Setting up autofollow rule..."
-curl -XPOST "https://$DR_ENDPOINT/_plugins/_replication/_autofollow" \
+curl -XPOST "https://${DR_ENDPOINT}/_plugins/_replication/_autofollow" \
     -H "Content-Type: application/json" \
     -u "admin:Admin123!" \
     -k \

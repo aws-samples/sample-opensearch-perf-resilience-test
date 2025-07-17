@@ -61,9 +61,18 @@ Parameters:
       - m5.2xlarge
     Description: EC2 instance type for the benchmark runner
 
-  #KeyPairName:
-  #  Type: AWS::EC2::KeyPair::KeyName
-  #  Description: Name of an existing EC2 KeyPair to enable SSH access to the instance
+  AllowedSSHCIDR:
+    Type: String
+    Default: 10.0.0.0/24
+    Description: CIDR block allowed to access SSH (should be restricted to your IP or VPN range)
+
+  AllowEC2InstanceConnect:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: Whether to allow EC2 Instance Connect to access the instance
 
 Resources:
   # VPC and Network Configuration
@@ -76,6 +85,50 @@ Resources:
       Tags:
         - Key: Name
           Value: OpenSearch-Benchmark-VPC
+
+  # VPC Flow Logs for network traffic monitoring
+  VPCFlowLog:
+    Type: AWS::EC2::FlowLog
+    Properties:
+      DeliverLogsPermissionArn: !GetAtt VPCFlowLogsRole.Arn
+      LogDestinationType: cloud-watch-logs
+      LogGroupName: !Sub "/${AWS::StackName}/vpc-flow-logs"
+      ResourceId: !Ref VPC
+      ResourceType: VPC
+      TrafficType: ALL
+      Tags:
+        - Key: Name
+          Value: OpenSearch-Benchmark-VPC-FlowLogs
+
+  VPCFlowLogsGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/${AWS::StackName}/vpc-flow-logs"
+      RetentionInDays: 14
+
+  VPCFlowLogsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: VPCFlowLogsPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogGroups
+                  - logs:DescribeLogStreams
+                Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/${AWS::StackName}/vpc-flow-logs:*"
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -98,7 +151,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet1CIDR
       AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: true
+      MapPublicIpOnLaunch: !If [AllowEC2InstanceConnect, true, false]  # Enable for EC2 Instance Connect if needed
       Tags:
         - Key: Name
           Value: OpenSearch-Benchmark-Public-Subnet
@@ -153,17 +206,60 @@ Resources:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
 
-  # Security Groups
+  # Security Groups with proper descriptions and restricted access
   BenchmarkSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Security group for benchmark EC2 instance
       VpcId: !Ref VPC
-      SecurityGroupIngress:
+      SecurityGroupIngress: !If
+        - EnableEC2InstanceConnect
+        - - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: !Ref AllowedSSHCIDR
+            Description: "Allows SSH access from specified CIDR range for administration"
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 18.206.107.24/29
+            Description: "Allows SSH access from EC2 Instance Connect (us-east-1)"
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 3.16.146.0/29
+            Description: "Allows SSH access from EC2 Instance Connect (us-east-2)"
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 13.52.6.112/29
+            Description: "Allows SSH access from EC2 Instance Connect (us-west-1)"
+          - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: 18.237.140.160/29
+            Description: "Allows SSH access from EC2 Instance Connect (us-west-2)"
+        - - IpProtocol: tcp
+            FromPort: 22
+            ToPort: 22
+            CidrIp: !Ref AllowedSSHCIDR
+            Description: "Allows SSH access from specified CIDR range for administration"
+      SecurityGroupEgress:
         - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
+          FromPort: 443
+          ToPort: 443
           CidrIp: 0.0.0.0/0
+          Description: "Allows HTTPS outbound traffic for package downloads and API calls"
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: "Allows HTTP outbound traffic for package downloads"
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          DestinationSecurityGroupId: !Ref OpenSearchSecurityGroup
+          Description: "Allows HTTPS traffic to OpenSearch domain"
       Tags:
         - Key: Name
           Value: OpenSearch-Benchmark-EC2-SG
@@ -180,10 +276,18 @@ Resources:
           FromPort: 443
           ToPort: 443
           SourceSecurityGroupId: !Ref BenchmarkSecurityGroup
+          Description: "Allows HTTPS access from benchmark instances"
         - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 10.1.0.0/16
+          Description: "Allows HTTPS access from DR VPC for replication"
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 10.1.0.0/16
+          Description: "Allows HTTPS outbound traffic to DR VPC for replication"
       Tags:
         - Key: Name
           Value: OpenSearch-Benchmark-Domain-SG
@@ -230,7 +334,40 @@ Resources:
       Roles:
         - !Ref BenchmarkRole
 
-  # OpenSearch Domain
+  # OpenSearch Domain with logging enabled
+  OpenSearchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/opensearch/${OpenSearchDomainName}"
+      RetentionInDays: 30
+
+  OpenSearchLogPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: OpenSearchLogPolicy
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:PutLogEventsBatch
+            Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/opensearch/${OpenSearchDomainName}:*"
+      Roles:
+        - !Ref OpenSearchLogRole
+
+  OpenSearchLogRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: es.amazonaws.com
+            Action: sts:AssumeRole
+
   OpenSearchDomain:
     Type: AWS::OpenSearchService::Domain
     Properties:
@@ -240,7 +377,7 @@ Resources:
           - 
             Effect: Allow
             Principal:
-              AWS: '*'
+              AWS: !GetAtt BenchmarkRole.Arn
             Action: 
               - es:*
               - es:StartDomainMaintenance
@@ -248,7 +385,7 @@ Resources:
           - 
             Effect: Allow
             Principal:
-              AWS: '*'
+              AWS: !GetAtt BenchmarkRole.Arn
             Action: 
               - es:ESCrossClusterGet
             Resource: !Sub arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}
@@ -316,22 +453,34 @@ Resources:
         MasterUserOptions:
           MasterUserName: admin
           MasterUserPassword: Admin123!
+      LogPublishingOptions:
+        ES_APPLICATION_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
+        AUDIT_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
+        INDEX_SLOW_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
+        SEARCH_SLOW_LOGS:
+          CloudWatchLogsLogGroupArn: !GetAtt OpenSearchLogGroup.Arn
+          Enabled: true
 
   # EC2 Instance for Benchmark
   BenchmarkInstance:
     Type: AWS::EC2::Instance
     Properties:
       InstanceType: !Ref InstanceType
-      #ImageId: !FindInMap [RegionMap, !Ref 'AWS::Region', AMI]
       ImageId: !Ref LatestAmiId
-      #KeyName: !Ref KeyPairName
       SubnetId: !Ref PublicSubnet1
       BlockDeviceMappings:
-        - DeviceName: "/dev/xvda" # Example device name, adjust as needed
+        - DeviceName: "/dev/xvda"
           Ebs:
-            DeleteOnTermination: "true" # Delete volume on instance termination
+            DeleteOnTermination: "true"
             VolumeSize: "100" 
             VolumeType: "gp3"
+            Encrypted: true  # Added encryption for EBS volumes
       SecurityGroupIds:
         - !Ref BenchmarkSecurityGroup
       IamInstanceProfile: !Ref BenchmarkInstanceProfile
@@ -376,7 +525,7 @@ Resources:
 
           #create result Directory   
           RESULT_DIR="/home/ec2-user/results"     
-          mkdir -p /home/ec2-user/results
+          mkdir -p "${RESULT_DIR}"
 
           # Create test scripts directory
           mkdir -p /home/ec2-user/benchmark-scripts
@@ -394,29 +543,25 @@ Resources:
           DOMAIN_ENDPOINT="https://${OpenSearchDomain.DomainEndpoint}"
 
           echo "Running benchmark with:"
-          echo "- Workload: $WORKLOAD"
-          echo "- Test procedure: $TEST_PROCEDURE"
+          echo "- Workload: ${WORKLOAD}"
+          echo "- Test procedure: ${TEST_PROCEDURE}"
           echo ""
           
-          # Get OpenSearch domain endpoint
-          #DOMAIN_ENDPOINT=$(aws opensearch describe-domain --domain-name ${OpenSearchDomainName} --region ${AWS::Region} --query 'DomainStatus.Endpoints' --output text)
-          
-          if [ -z "$DOMAIN_ENDPOINT" ]; then
+          if [ -z "${DOMAIN_ENDPOINT}" ]; then
             echo "Error: Could not retrieve OpenSearch domain endpoint"
             exit 1
           fi
           
-          echo "Using OpenSearch endpoint: $DOMAIN_ENDPOINT"
+          echo "Using OpenSearch endpoint: ${DOMAIN_ENDPOINT}"
           
           # Run the benchmark
-
           nohup opensearch-benchmark execute-test \
-          --target-hosts=$DOMAIN_ENDPOINT \
+          --target-hosts="${DOMAIN_ENDPOINT}" \
           --client-options="use_ssl:true,verify_certs:false,basic_auth_user:admin,basic_auth_password:Admin123!" \
-          --workload=$WORKLOAD \
+          --workload="${WORKLOAD}" \
           --workload-params="number_of_replicas: 1","number_of_shards: 4" \
           --pipeline=benchmark-only \
-          --results-file=$RESULT_DIR/benchmark-results-$(date +%Y%m%d-%H%M%S).json \
+          --results-file="${RESULT_DIR}/benchmark-results-$(date +%Y%m%d-%H%M%S).json" \
           --kill-running-processes &
 
           EOL
@@ -435,35 +580,35 @@ Resources:
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           
           echo "Starting OpenSearch cluster monitoring (Ctrl+C to stop)"
-          echo "Results will be saved to $RESULT_DIR"
+          echo "Results will be saved to ${RESULT_DIR}"
               
           while true; do
             CURRENT_TIME=$(date +%Y-%m-%d_%H:%M:%S)
             
             # Get OpenSearch domain endpoint if not already set
-            if [ -z "$DOMAIN_ENDPOINT" ]; then
+            if [ -z "${DOMAIN_ENDPOINT}" ]; then
               DOMAIN_ENDPOINT=$(aws opensearch describe-domain --domain-name ${OpenSearchDomainName} --region ${AWS::Region} --query 'DomainStatus.Endpoints' --output text)
-              if [ -z "$DOMAIN_ENDPOINT" ]; then
+              if [ -z "${DOMAIN_ENDPOINT}" ]; then
                 echo "Error: Could not retrieve OpenSearch domain endpoint"
                 exit 1
               fi
-              echo "Using OpenSearch endpoint: $DOMAIN_ENDPOINT"
+              echo "Using OpenSearch endpoint: ${DOMAIN_ENDPOINT}"
             fi
               
             # Cluster health
-            sudo curl -s -u admin:Admin123! --insecure https://$DOMAIN_ENDPOINT/_cluster/health | \
-              jq '. + {"timestamp": "'$CURRENT_TIME'"}' >> $RESULT_DIR/cluster_health_$TIMESTAMP.json
+            sudo curl -s -u admin:Admin123! --insecure "https://${DOMAIN_ENDPOINT}/_cluster/health" | \
+              jq '. + {"timestamp": "'"${CURRENT_TIME}"'"}' >> "${RESULT_DIR}/cluster_health_${TIMESTAMP}.json"
             
             # Node stats
-            sudo curl -s -u admin:Admin123! --insecure https://$DOMAIN_ENDPOINT/_nodes/stats | \
-              jq '. + {"timestamp": "'$CURRENT_TIME'"}' >> $RESULT_DIR/node_stats_$TIMESTAMP.json
+            sudo curl -s -u admin:Admin123! --insecure "https://${DOMAIN_ENDPOINT}/_nodes/stats" | \
+              jq '. + {"timestamp": "'"${CURRENT_TIME}"'"}' >> "${RESULT_DIR}/node_stats_${TIMESTAMP}.json"
             
             # Index stats
-            sudo curl -s -u admin:Admin123! --insecure https://$DOMAIN_ENDPOINT/_stats | \
-              jq '. + {"timestamp": "'$CURRENT_TIME'"}' >> $RESULT_DIR/index_stats_$TIMESTAMP.json
+            sudo curl -s -u admin:Admin123! --insecure "https://${DOMAIN_ENDPOINT}/_stats" | \
+              jq '. + {"timestamp": "'"${CURRENT_TIME}"'"}' >> "${RESULT_DIR}/index_stats_${TIMESTAMP}.json"
               
-            echo "Collected metrics at $CURRENT_TIME"
-            sleep $INTERVAL
+            echo "Collected metrics at ${CURRENT_TIME}"
+            sleep ${INTERVAL}
           done
           EOL
           chmod +x monitor-cluster.sh
@@ -485,34 +630,24 @@ Resources:
           LOG_FILE="/home/ec2-user/benchmark-logs/benchmark_$(date +%Y%m%d-%H%M%S).log"
           mkdir -p /home/ec2-user/benchmark-logs
           
-          echo "" | tee -a "$LOG_FILE"
-          echo "******* Starting Resiliency script *******" | tee -a "$LOG_FILE"
-          echo "Starting Benchmark......" | tee -a "$LOG_FILE"
+          echo "" | tee -a "${LOG_FILE}"
+          echo "******* Starting Resiliency script *******" | tee -a "${LOG_FILE}"
+          echo "Starting Benchmark......" | tee -a "${LOG_FILE}"
 
           # Start benchmark in background
           nohup opensearch-benchmark execute-test \
-            --target-hosts=$DOMAIN_ENDPOINT \
+            --target-hosts="${DOMAIN_ENDPOINT}" \
             --client-options="use_ssl:true,verify_certs:false,basic_auth_user:admin,basic_auth_password:Admin123!" \
             --workload=nyc_taxis \
             --workload-params="number_of_replicas: 1","number_of_shards: 4" \
             --pipeline=benchmark-only \
-            --results-file=$RESULT_DIR/benchmark-results-$(date +%Y%m%d-%H%M%S).json \
-            --kill-running-processes > "$LOG_FILE" 2>&1 &
-          
-          # Start benchmark in background
-          # nohup opensearch-benchmark execute-test \
-          #  --target-hosts=$DOMAIN_ENDPOINT \
-          #  --client-options="use_ssl:true,verify_certs:false,basic_auth_user:admin,basic_auth_password:Admin123!" \
-          #  --workload=geonames \
-          #  --workload-params="number_of_replicas: 1","number_of_shards: 4" \
-          #  --pipeline=benchmark-only \
-          #  --results-file=$RESULT_DIR/benchmark-results-$(date +%Y%m%d-%H%M%S).json \
-          #  --kill-running-processes > "$LOG_FILE" 2>&1 &
+            --results-file="${RESULT_DIR}/benchmark-results-$(date +%Y%m%d-%H%M%S).json" \
+            --kill-running-processes > "${LOG_FILE}" 2>&1 &
           
           # Store benchmark process ID
           BENCHMARK_PID=$!
           
-          echo "Benchmark process ID: $BENCHMARK_PID" | tee -a "$LOG_FILE"
+          echo "Benchmark process ID: ${BENCHMARK_PID}" | tee -a "${LOG_FILE}"
           
           # Wait for benchmark to warm up
           sleep 300
@@ -528,9 +663,9 @@ Resources:
                 --output text)
           
             # Count the actual number of nodes
-            NODE_COUNT=$(echo "$NODE_IDS" | wc -w)
-            if [ "$NODE_COUNT" -eq 0 ]; then
-                echo "No nodes found in domain $OPENSEARCH_DOMAIN" 
+            NODE_COUNT=$(echo "${NODE_IDS}" | wc -w)
+            if [ "${NODE_COUNT}" -eq 0 ]; then
+                echo "No nodes found in domain ${OPENSEARCH_DOMAIN}" 
                 exit 1
             fi
           
@@ -541,76 +676,73 @@ Resources:
             SELECTED_NODE=""
           
             # Process space-separated string without array
-            for node in $NODE_IDS; do
+            for node in ${NODE_IDS}; do
                 COUNT=$((COUNT + 1))
-                if [ $COUNT -eq $RANDOM_NODE ]; then
-                    SELECTED_NODE=$node
+                if [ ${COUNT} -eq ${RANDOM_NODE} ]; then
+                    SELECTED_NODE="${node}"
                     break
                 fi
             done
           
             # Return selected node ID
-            echo "$SELECTED_NODE"
+            echo "${SELECTED_NODE}"
           }
           
           # Get random node ID
           SELECTED_NODE_ID=$(get_random_node_id)
           
-          if [ -z "$SELECTED_NODE_ID" ]; then
-              echo "Failed to get node ID" | tee -a "$LOG_FILE"
+          if [ -z "${SELECTED_NODE_ID}" ]; then
+              echo "Failed to get node ID" | tee -a "${LOG_FILE}"
               exit 1
           fi
           
-          echo "Random node: $SELECTED_NODE_ID" | tee -a "$LOG_FILE"
+          echo "Random node: ${SELECTED_NODE_ID}" | tee -a "${LOG_FILE}"
           
-          echo "Node restart initiated" | tee -a "$LOG_FILE"
+          echo "Node restart initiated" | tee -a "${LOG_FILE}"
           
           # Initiate node restart using start-domain-maintenance
           MAINTENANCE_ID=$(aws opensearch start-domain-maintenance \
-            --domain-name $OPENSEARCH_DOMAIN \
-            --region "$AWS_REGION" \
+            --domain-name "${OPENSEARCH_DOMAIN}" \
+            --region "${AWS_REGION}" \
             --action REBOOT_NODE \
-            --node-id $SELECTED_NODE_ID \
+            --node-id "${SELECTED_NODE_ID}" \
             --query 'MaintenanceId' \
             --output text)
           
           # Check if MAINTENANCE_ID was successfully obtained
-          if [ -z "$MAINTENANCE_ID" ] || [ "$MAINTENANCE_ID" == "None" ]; then
-              echo "Failed to start domain maintenance. Exiting..." | tee -a "$LOG_FILE"
+          if [ -z "${MAINTENANCE_ID}" ] || [ "${MAINTENANCE_ID}" == "None" ]; then
+              echo "Failed to start domain maintenance. Exiting..." | tee -a "${LOG_FILE}"
               exit 1
           fi
           
           # Monitor node restart status
           while true; do
             STATUS=$(aws opensearch get-domain-maintenance-status \
-              --domain-name "$OPENSEARCH_DOMAIN" \
-              --maintenance-id $MAINTENANCE_ID \
-              --region "$AWS_REGION" \
+              --domain-name "${OPENSEARCH_DOMAIN}" \
+              --maintenance-id "${MAINTENANCE_ID}" \
+              --region "${AWS_REGION}" \
               --query 'Status' \
               --output text)
           
-            if [ "$STATUS" == "COMPLETED" ]; then
-              echo "Maintenance completed successfully" | tee -a "$LOG_FILE"
+            if [ "${STATUS}" == "COMPLETED" ]; then
+              echo "Maintenance completed successfully" | tee -a "${LOG_FILE}"
               break
             fi
-            echo "Current status: $STATUS"
+            echo "Current status: ${STATUS}"
             sleep 60
           done
           
           # Let benchmark continue for a while after restart
           sleep 300
           
-          # Stop benchmark
-          # kill $BENCHMARK_PID
-          
           # Wait for benchmark to finish
-          wait $BENCHMARK_PID
+          wait ${BENCHMARK_PID}
 
           EOL
 
           chmod +x resilency-test.sh
 
-          echo "Resilency script created" | tee -a "$LOG_FILE"
+          echo "Resilency script created" | tee -a "${LOG_FILE}"
 
       Tags:
         - Key: Name
@@ -620,6 +752,7 @@ Conditions:
   IsStandardConfig: !Equals [!Ref ClusterConfig, 'standard']
   IsMinimalConfig: !Equals [!Ref ClusterConfig, 'minimal']
   IsCoordinatorConfig: !Equals [!Ref ClusterConfig, 'coordinator']
+  EnableEC2InstanceConnect: !Equals [!Ref AllowEC2InstanceConnect, 'true']
 
 Mappings:
   RegionMap:
@@ -640,10 +773,6 @@ Outputs:
   OpenSearchDomainEndpoint:
     Description: Endpoint of the OpenSearch domain
     Value: !GetAtt OpenSearchDomain.DomainEndpoint
-
-  #SSHCommand:
-  #  Description: SSH command to connect to the benchmark instance
-  #  Value: !Sub ssh -i ${KeyPairName}.pem ec2-user@${BenchmarkInstance.PublicIp}
 
   VPCIdPri:
     Description: VPC ID
