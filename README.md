@@ -1,12 +1,13 @@
 # OpenSearch Performance and Resilience Testing Framework
 
-This repository contains a comprehensive framework for setting up, benchmarking, and testing the resilience of OpenSearch deployments on AWS. It includes CloudFormation templates for deploying OpenSearch domains in both primary and disaster recovery (DR) configurations, along with scripts for performance benchmarking, resilience testing, and cross-region replication.
+This repository contains a comprehensive framework for setting up, benchmarking, and testing the resilience of OpenSearch deployments on AWS. It includes CloudFormation templates for deploying OpenSearch domains in both primary and disaster recovery (DR) configurations, along with scripts for performance benchmarking, resilience testing, and cross-region replication. The templates and scripts have been enhanced with security improvements to follow AWS security best practices.
 
 ## Table of Contents
 
 - [Overview](#overview)
 - [Prerequisites](#prerequisites)
 - [Repository Structure](#repository-structure)
+- [Security Improvements](#security-improvements)
 - [Setup Instructions](#setup-instructions)
   - [Primary Region Setup](#primary-region-setup)
   - [Disaster Recovery (DR) Setup](#disaster-recovery-dr-setup)
@@ -27,12 +28,13 @@ This repository contains a comprehensive framework for setting up, benchmarking,
 
 This framework allows you to:
 
-1. Deploy OpenSearch domains in AWS using CloudFormation templates
+1. Deploy OpenSearch domains in AWS using CloudFormation templates with security best practices
 2. Run performance benchmarks to evaluate throughput, latency, and resource utilization
 3. Test resilience by simulating node failures and observing recovery
 4. Set up cross-region replication for disaster recovery
 5. Test DR failover scenarios
 6. Monitor key metrics through CloudWatch and custom scripts
+7. Implement security controls following AWS best practices
 
 ## Prerequisites
 
@@ -40,6 +42,32 @@ This framework allows you to:
 - Python 3.6 or higher
 - opensearch-benchmark tool installed (`pip install opensearch-benchmark`)
 - jq for JSON processing (`apt-get install jq` or `yum install jq`)
+- Your IP address or CIDR range for SSH access
+
+## Security Improvements
+
+The templates and scripts in this repository have been enhanced with the following security improvements:
+
+1. **Security Groups Documentation and Controls**
+   - Added clear descriptions to all security group rules
+   - Restricted SSH access to specific CIDR blocks instead of 0.0.0.0/0
+   - Implemented explicit egress rules instead of allowing unrestricted outbound traffic
+
+2. **VPC Configuration Strengthening**
+   - Added VPC Flow Logs for network traffic monitoring
+   - Controlled automatic public IP assignment in subnets based on requirements
+
+3. **OpenSearch Domain Security**
+   - Enabled logging and audit logging for OpenSearch domains
+   - Restricted access policies to specific IAM roles instead of wildcard principals
+   - Maintained encryption at rest and in transit
+
+4. **Shell Scripting Practices**
+   - Added proper quoting around all variables to prevent command injection
+   - Improved error handling and validation
+   - Added descriptive comments and usage information
+
+For more detailed information about the security improvements, see the [SECURITY_IMPROVEMENTS.md](SECURITY_IMPROVEMENTS.md) file.
 
 ## Repository Structure
 
@@ -89,9 +117,13 @@ DR_REGION="us-west-2"
 aws cloudformation create-stack \
   --stack-name opensearch-benchmark \
   --template-body file://templates/opensearch-benchmark-cfn.yaml \
+  --parameters ParameterKey=AllowedSSHCIDR,ParameterValue=YOUR_IP_CIDR \
+               ParameterKey=AllowEC2InstanceConnect,ParameterValue=true \
   --capabilities CAPABILITY_IAM \
   --region $PRI_REGION
 ```
+
+Replace `YOUR_IP_CIDR` with your IP address in CIDR notation (e.g., 192.168.1.1/32). The `AllowEC2InstanceConnect` parameter (default: true) enables SSH access from EC2 Instance Connect IP ranges, allowing you to connect to your instances directly from the AWS Management Console.
 
 4. Wait for the stack to complete deployment (typically 15-20 minutes):
 
@@ -140,7 +172,7 @@ echo "Benchmark Instance IP: $BENCHMARK_INSTANCE_IP"
 # Using EC2 Instance Connect (in AWS Console)
 # Navigate to EC2 > Instances > Select your instance > Connect > EC2 Instance Connect
 
-# Or using SSH if you configured a key pair
+# Or using SSH if you configured a key pair and specified your IP in AllowedSSHCIDR
 # ssh -i your-key.pem ec2-user@$BENCHMARK_INSTANCE_IP
 ```
 
@@ -157,9 +189,12 @@ aws cloudformation create-stack \
     ParameterKey=PrimaryRegion,ParameterValue=$PRI_REGION \
     ParameterKey=PrimaryDomainARN,ParameterValue=$PRIMARY_ARN \
     ParameterKey=PrimaryVPCId,ParameterValue=$VPC_PRI \
+    ParameterKey=AllowedSSHCIDR,ParameterValue=YOUR_IP_CIDR \
   --capabilities CAPABILITY_IAM \
   --region $DR_REGION
 ```
+
+Replace `YOUR_IP_CIDR` with your IP address in CIDR notation (e.g., 192.168.1.1/32).
 
 2. Wait for the DR stack to complete deployment:
 

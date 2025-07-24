@@ -74,6 +74,9 @@ Parameters:
       - 'false'
     Description: Whether to allow EC2 Instance Connect to access the instance
 
+Conditions:
+  EnableEC2InstanceConnect: !Equals [!Ref AllowEC2InstanceConnect, 'true']
+
 Resources:
   # VPC and Network Configuration
   VPC:
@@ -151,7 +154,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: !Ref PublicSubnet1CIDR
       AvailabilityZone: !Select [0, !GetAZs '']
-      MapPublicIpOnLaunch: !If [AllowEC2InstanceConnect, true, false]  # Enable for EC2 Instance Connect if needed
+      MapPublicIpOnLaunch: !If [EnableEC2InstanceConnect, true, false]  # Enable for EC2 Instance Connect if needed
       Tags:
         - Key: Name
           Value: OpenSearch-Benchmark-Public-Subnet
@@ -239,11 +242,6 @@ Resources:
             ToPort: 22
             CidrIp: 18.237.140.160/29
             Description: "Allows SSH access from EC2 Instance Connect (us-west-2)"
-        - - IpProtocol: tcp
-            FromPort: 22
-            ToPort: 22
-            CidrIp: !Ref AllowedSSHCIDR
-            Description: "Allows SSH access from specified CIDR range for administration"
       SecurityGroupEgress:
         - IpProtocol: tcp
           FromPort: 443
@@ -255,11 +253,11 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
           Description: "Allows HTTP outbound traffic for package downloads"
-        - IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-          DestinationSecurityGroupId: !Ref OpenSearchSecurityGroup
-          Description: "Allows HTTPS traffic to OpenSearch domain"
+        #- IpProtocol: tcp
+        #  FromPort: 443
+        #  ToPort: 443
+        #  DestinationSecurityGroupId: !Ref OpenSearchSecurityGroup
+        #  Description: "Allows HTTPS traffic to OpenSearch domain"
       Tags:
         - Key: Name
           Value: OpenSearch-Benchmark-EC2-SG
@@ -293,6 +291,16 @@ Resources:
           Value: OpenSearch-Benchmark-Domain-SG
         - Key: Project
           Value: OpenSearch-Benchmark
+      
+  BenchmarkToOpenSearchEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref BenchmarkSecurityGroup
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationSecurityGroupId: !Ref OpenSearchSecurityGroup
+      Description: "Allows HTTPS traffic to OpenSearch domain"
 
   # IAM Role and Instance Profile
   BenchmarkRole:
@@ -366,7 +374,34 @@ Resources:
           - Effect: Allow
             Principal:
               Service: es.amazonaws.com
-            Action: sts:AssumeRole
+            Action: sts:AssumeRole 
+  
+  OpenSearchLogResourcePolicy:
+    Type: AWS::Logs::ResourcePolicy
+    Properties:
+      PolicyName: OpenSearchLogResourcePolicy
+      PolicyDocument: !Sub |
+        {
+          "Version": "2012-10-17",
+          "Statement": [
+            {
+             "Effect": "Allow",
+             "Principal": {
+               "Service": "es.amazonaws.com"
+             },
+             "Action": [
+               "logs:CreateLogStream",
+               "logs:PutLogEvents",
+               "logs:PutLogEventsBatch"
+             ],
+             "Resource": [
+              "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/opensearch/${OpenSearchDomainName}:*",
+              "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/opensearch/${OpenSearchDomainName}"
+             ]
+            }
+          ]
+        }
+
 
   OpenSearchDomain:
     Type: AWS::OpenSearchService::Domain
@@ -377,7 +412,7 @@ Resources:
           - 
             Effect: Allow
             Principal:
-              AWS: !GetAtt BenchmarkRole.Arn
+              AWS: '*'
             Action: 
               - es:*
               - es:StartDomainMaintenance
@@ -385,7 +420,7 @@ Resources:
           - 
             Effect: Allow
             Principal:
-              AWS: !GetAtt BenchmarkRole.Arn
+              AWS: '*'
             Action: 
               - es:ESCrossClusterGet
             Resource: !Sub arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${OpenSearchDomainName}
@@ -525,7 +560,7 @@ Resources:
 
           #create result Directory   
           RESULT_DIR="/home/ec2-user/results"     
-          mkdir -p "${RESULT_DIR}"
+          mkdir -p "$RESULT_DIR"
 
           # Create test scripts directory
           mkdir -p /home/ec2-user/benchmark-scripts
@@ -543,25 +578,25 @@ Resources:
           DOMAIN_ENDPOINT="https://${OpenSearchDomain.DomainEndpoint}"
 
           echo "Running benchmark with:"
-          echo "- Workload: ${WORKLOAD}"
-          echo "- Test procedure: ${TEST_PROCEDURE}"
+          echo "- Workload: $WORKLOAD"
+          echo "- Test procedure: $TEST_PROCEDURE"
           echo ""
           
-          if [ -z "${DOMAIN_ENDPOINT}" ]; then
+          if [ -z "$DOMAIN_ENDPOINT" ]; then
             echo "Error: Could not retrieve OpenSearch domain endpoint"
             exit 1
           fi
           
-          echo "Using OpenSearch endpoint: ${DOMAIN_ENDPOINT}"
+          echo "Using OpenSearch endpoint: $DOMAIN_ENDPOINT"
           
           # Run the benchmark
           nohup opensearch-benchmark execute-test \
-          --target-hosts="${DOMAIN_ENDPOINT}" \
+          --target-hosts="$DOMAIN_ENDPOINT" \
           --client-options="use_ssl:true,verify_certs:false,basic_auth_user:admin,basic_auth_password:Admin123!" \
-          --workload="${WORKLOAD}" \
+          --workload="$WORKLOAD" \
           --workload-params="number_of_replicas: 1","number_of_shards: 4" \
           --pipeline=benchmark-only \
-          --results-file="${RESULT_DIR}/benchmark-results-$(date +%Y%m%d-%H%M%S).json" \
+          --results-file="$RESULT_DIR/benchmark-results-$(date +%Y%m%d-%H%M%S).json" \
           --kill-running-processes &
 
           EOL
@@ -580,35 +615,35 @@ Resources:
           TIMESTAMP=$(date +%Y%m%d-%H%M%S)
           
           echo "Starting OpenSearch cluster monitoring (Ctrl+C to stop)"
-          echo "Results will be saved to ${RESULT_DIR}"
+          echo "Results will be saved to $RESULT_DIR"
               
           while true; do
             CURRENT_TIME=$(date +%Y-%m-%d_%H:%M:%S)
             
             # Get OpenSearch domain endpoint if not already set
-            if [ -z "${DOMAIN_ENDPOINT}" ]; then
+            if [ -z "$DOMAIN_ENDPOINT" ]; then
               DOMAIN_ENDPOINT=$(aws opensearch describe-domain --domain-name ${OpenSearchDomainName} --region ${AWS::Region} --query 'DomainStatus.Endpoints' --output text)
-              if [ -z "${DOMAIN_ENDPOINT}" ]; then
+              if [ -z "$DOMAIN_ENDPOINT" ]; then
                 echo "Error: Could not retrieve OpenSearch domain endpoint"
                 exit 1
               fi
-              echo "Using OpenSearch endpoint: ${DOMAIN_ENDPOINT}"
+              echo "Using OpenSearch endpoint: $DOMAIN_ENDPOINT"
             fi
               
             # Cluster health
-            sudo curl -s -u admin:Admin123! --insecure "https://${DOMAIN_ENDPOINT}/_cluster/health" | \
-              jq '. + {"timestamp": "'"${CURRENT_TIME}"'"}' >> "${RESULT_DIR}/cluster_health_${TIMESTAMP}.json"
+            sudo curl -s -u admin:Admin123! --insecure "https://$DOMAIN_ENDPOINT/_cluster/health" | \
+              jq '. + {"timestamp": "'"$CURRENT_TIME"'"}' >> "$RESULT_DIR/cluster_health_$TIMESTAMP.json"
             
             # Node stats
-            sudo curl -s -u admin:Admin123! --insecure "https://${DOMAIN_ENDPOINT}/_nodes/stats" | \
-              jq '. + {"timestamp": "'"${CURRENT_TIME}"'"}' >> "${RESULT_DIR}/node_stats_${TIMESTAMP}.json"
+            sudo curl -s -u admin:Admin123! --insecure "https://$DOMAIN_ENDPOINT/_nodes/stats" | \
+              jq '. + {"timestamp": "'"$CURRENT_TIME"'"}' >> "$RESULT_DIR/node_stats_$TIMESTAMP.json"
             
             # Index stats
-            sudo curl -s -u admin:Admin123! --insecure "https://${DOMAIN_ENDPOINT}/_stats" | \
-              jq '. + {"timestamp": "'"${CURRENT_TIME}"'"}' >> "${RESULT_DIR}/index_stats_${TIMESTAMP}.json"
+            sudo curl -s -u admin:Admin123! --insecure "https://$DOMAIN_ENDPOINT/_stats" | \
+              jq '. + {"timestamp": "'"$CURRENT_TIME"'"}' >> "$RESULT_DIR/index_stats_$TIMESTAMP.json"
               
-            echo "Collected metrics at ${CURRENT_TIME}"
-            sleep ${INTERVAL}
+            echo "Collected metrics at $CURRENT_TIME"
+            sleep $INTERVAL
           done
           EOL
           chmod +x monitor-cluster.sh
@@ -630,24 +665,24 @@ Resources:
           LOG_FILE="/home/ec2-user/benchmark-logs/benchmark_$(date +%Y%m%d-%H%M%S).log"
           mkdir -p /home/ec2-user/benchmark-logs
           
-          echo "" | tee -a "${LOG_FILE}"
-          echo "******* Starting Resiliency script *******" | tee -a "${LOG_FILE}"
-          echo "Starting Benchmark......" | tee -a "${LOG_FILE}"
+          echo "" | tee -a "$LOG_FILE"
+          echo "******* Starting Resiliency script *******" | tee -a "$LOG_FILE"
+          echo "Starting Benchmark......" | tee -a "$LOG_FILE"
 
           # Start benchmark in background
           nohup opensearch-benchmark execute-test \
-            --target-hosts="${DOMAIN_ENDPOINT}" \
+            --target-hosts="$DOMAIN_ENDPOINT" \
             --client-options="use_ssl:true,verify_certs:false,basic_auth_user:admin,basic_auth_password:Admin123!" \
             --workload=nyc_taxis \
             --workload-params="number_of_replicas: 1","number_of_shards: 4" \
             --pipeline=benchmark-only \
-            --results-file="${RESULT_DIR}/benchmark-results-$(date +%Y%m%d-%H%M%S).json" \
-            --kill-running-processes > "${LOG_FILE}" 2>&1 &
+            --results-file="$RESULT_DIR/benchmark-results-$(date +%Y%m%d-%H%M%S).json" \
+            --kill-running-processes > "$LOG_FILE" 2>&1 &
           
           # Store benchmark process ID
           BENCHMARK_PID=$!
           
-          echo "Benchmark process ID: ${BENCHMARK_PID}" | tee -a "${LOG_FILE}"
+          echo "Benchmark process ID: $BENCHMARK_PID" | tee -a "$LOG_FILE"
           
           # Wait for benchmark to warm up
           sleep 300
@@ -663,9 +698,9 @@ Resources:
                 --output text)
           
             # Count the actual number of nodes
-            NODE_COUNT=$(echo "${NODE_IDS}" | wc -w)
-            if [ "${NODE_COUNT}" -eq 0 ]; then
-                echo "No nodes found in domain ${OPENSEARCH_DOMAIN}" 
+            NODE_COUNT=$(echo "$NODE_IDS" | wc -w)
+            if [ "$NODE_COUNT" -eq 0 ]; then
+                echo "No nodes found in domain $OPENSEARCH_DOMAIN" 
                 exit 1
             fi
           
@@ -676,59 +711,59 @@ Resources:
             SELECTED_NODE=""
           
             # Process space-separated string without array
-            for node in ${NODE_IDS}; do
+            for node in $NODE_IDS; do
                 COUNT=$((COUNT + 1))
-                if [ ${COUNT} -eq ${RANDOM_NODE} ]; then
-                    SELECTED_NODE="${node}"
+                if [ $COUNT -eq $RANDOM_NODE ]; then
+                    SELECTED_NODE="$node"
                     break
                 fi
             done
           
             # Return selected node ID
-            echo "${SELECTED_NODE}"
+            echo "$SELECTED_NODE"
           }
           
           # Get random node ID
           SELECTED_NODE_ID=$(get_random_node_id)
           
-          if [ -z "${SELECTED_NODE_ID}" ]; then
-              echo "Failed to get node ID" | tee -a "${LOG_FILE}"
+          if [ -z "$SELECTED_NODE_ID" ]; then
+              echo "Failed to get node ID" | tee -a "$LOG_FILE"
               exit 1
           fi
           
-          echo "Random node: ${SELECTED_NODE_ID}" | tee -a "${LOG_FILE}"
+          echo "Random node: $SELECTED_NODE_ID" | tee -a "$LOG_FILE"
           
-          echo "Node restart initiated" | tee -a "${LOG_FILE}"
+          echo "Node restart initiated" | tee -a "$LOG_FILE"
           
           # Initiate node restart using start-domain-maintenance
           MAINTENANCE_ID=$(aws opensearch start-domain-maintenance \
-            --domain-name "${OPENSEARCH_DOMAIN}" \
-            --region "${AWS_REGION}" \
+            --domain-name "$OPENSEARCH_DOMAIN" \
+            --region "$AWS_REGION" \
             --action REBOOT_NODE \
-            --node-id "${SELECTED_NODE_ID}" \
+            --node-id "$SELECTED_NODE_ID" \
             --query 'MaintenanceId' \
             --output text)
           
           # Check if MAINTENANCE_ID was successfully obtained
-          if [ -z "${MAINTENANCE_ID}" ] || [ "${MAINTENANCE_ID}" == "None" ]; then
-              echo "Failed to start domain maintenance. Exiting..." | tee -a "${LOG_FILE}"
+          if [ -z "$MAINTENANCE_ID" ] || [ "$MAINTENANCE_ID" == "None" ]; then
+              echo "Failed to start domain maintenance. Exiting..." | tee -a "$LOG_FILE"
               exit 1
           fi
           
           # Monitor node restart status
           while true; do
             STATUS=$(aws opensearch get-domain-maintenance-status \
-              --domain-name "${OPENSEARCH_DOMAIN}" \
-              --maintenance-id "${MAINTENANCE_ID}" \
-              --region "${AWS_REGION}" \
+              --domain-name "$OPENSEARCH_DOMAIN" \
+              --maintenance-id $MAINTENANCE_ID \
+              --region "$AWS_REGION" \
               --query 'Status' \
               --output text)
           
-            if [ "${STATUS}" == "COMPLETED" ]; then
-              echo "Maintenance completed successfully" | tee -a "${LOG_FILE}"
+            if [ "$STATUS" == "COMPLETED" ]; then
+              echo "Maintenance completed successfully" | tee -a "$LOG_FILE"
               break
             fi
-            echo "Current status: ${STATUS}"
+            echo "Current status: $STATUS"
             sleep 60
           done
           
@@ -736,13 +771,13 @@ Resources:
           sleep 300
           
           # Wait for benchmark to finish
-          wait ${BENCHMARK_PID}
+          wait $BENCHMARK_PID
 
           EOL
 
           chmod +x resilency-test.sh
 
-          echo "Resilency script created" | tee -a "${LOG_FILE}"
+          echo "Resilency script created" | tee -a "$LOG_FILE"
 
       Tags:
         - Key: Name
