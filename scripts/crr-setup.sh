@@ -1,4 +1,10 @@
 #!/bin/bash
+#
+# DISCLAIMER: This code is provided as a sample for educational and testing purposes only.
+# Users must perform their own security review and due diligence before deploying any code
+# to production environments. The code provided represents a baseline implementation and
+# may not address all security considerations for your specific environment.
+#
 set -e
 
 # Default values

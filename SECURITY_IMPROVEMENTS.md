@@ -1,5 +1,7 @@
 # Security Improvements
 
+> **DISCLAIMER**: This code is provided as a sample for educational and testing purposes only. Users must perform their own security review and due diligence before deploying any code to production environments. The security improvements outlined in this document represent a baseline set of practices but may not address all security considerations for your specific environment.
+
 This document outlines the security improvements made to address the issues identified in the security scan of the OpenSearch Performance and Resilience Testing repository.
 
 ## Overview of Security Issues Addressed
@@ -17,6 +19,7 @@ This document outlines the security improvements made to address the issues iden
    - Enabled logging and audit logging for OpenSearch domains
    - Restricted access policies to specific IAM roles instead of wildcard principals
    - Maintained encryption at rest and in transit
+   - For more information on OpenSearch security best practices, see: https://opensearch.org/docs/latest/security/index/ and https://docs.aws.amazon.com/opensearch-service/latest/developerguide/security.html
 
 4. **Shell Scripting Practices**
    - Added proper quoting around all variables to prevent command injection
@@ -206,6 +209,7 @@ fi
 1. **Principle of Least Privilege**
    - Security groups now follow the principle of least privilege, allowing only necessary traffic
    - IAM roles have been scoped to only the required permissions
+   - For more information on AWS IAM least privilege best practices, see: https://docs.aws.amazon.com/IAM/latest/UserGuide/best-practices.html#grant-least-privilege and https://docs.aws.amazon.com/IAM/latest/UserGuide/getting-started-reduce-permissions.html
 
 2. **Defense in Depth**
    - Added multiple layers of security controls (network, access, logging)
@@ -245,13 +249,20 @@ The secure versions of the templates and scripts are provided with the `-secure`
    ./scripts/run-benchmark-secure.sh --endpoint https://your-opensearch-endpoint
    ```
 
-## Conclusion
+## Security Considerations
 
-These security improvements address the issues identified in the security scan and bring the infrastructure in line with AWS security best practices. The changes focus on:
+The security improvements outlined in this document address specific issues identified in the security scan and implement several AWS security best practices. The changes focus on:
 
 1. Better documentation and tighter controls for security groups
 2. Strengthened VPC configuration with flow logs and proper subnet settings
 3. Enhanced OpenSearch domain security with logging and audit capabilities
 4. Improved shell scripting practices to prevent potential vulnerabilities
 
-By implementing these changes, the overall security posture of the OpenSearch performance and resilience testing infrastructure has been significantly improved.
+While these changes significantly improve the security posture of the OpenSearch performance and resilience testing infrastructure, security is an ongoing process. Users should:
+
+- Regularly review and update security configurations as best practices evolve
+- Consider additional security controls specific to their environment and use case
+- Perform regular security assessments and penetration testing
+- Stay informed about security updates for all components in the infrastructure
+
+For production deployments, additional security measures beyond those implemented here may be necessary based on your organization's security requirements and compliance standards.

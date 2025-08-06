@@ -1,5 +1,7 @@
 # OpenSearch Performance and Resilience Testing Framework
 
+> **DISCLAIMER**: This code is provided as a sample for educational and testing purposes only. Users must perform their own security review and due diligence before deploying any code to production environments. The code provided represents a baseline implementation and may not address all security considerations for your specific environment.
+
 This repository contains a comprehensive framework for setting up, benchmarking, and testing the resilience of OpenSearch deployments on AWS. It includes CloudFormation templates for deploying OpenSearch domains in both primary and disaster recovery (DR) configurations, along with scripts for performance benchmarking, resilience testing, and cross-region replication. The templates and scripts have been enhanced with security improvements to follow AWS security best practices.
 
 ## Table of Contents
