@@ -2,17 +2,17 @@
 
 > **DISCLAIMER**: This code is provided as a sample for educational and testing purposes only. Users must perform their own security review and due diligence before deploying any code to production environments. The security improvements outlined in this document represent a baseline set of practices but may not address all security considerations for your specific environment.
 
-This document outlines the security improvements made to address the issues identified in the security scan of the OpenSearch Performance and Resilience Testing repository.
+This document outlines the security improvements.
 
 ## Overview of Security Issues Addressed
 
 1. **Security Groups Documentation and Controls**
-   - Added clear descriptions to all security group rules
+   - Clear descriptions to all security group rules
    - Restricted SSH access to specific CIDR blocks instead of 0.0.0.0/0
    - Implemented explicit egress rules instead of allowing unrestricted outbound traffic
 
 2. **VPC Configuration Strengthening**
-   - Added VPC Flow Logs for network traffic monitoring
+   - VPC Flow Logs for network traffic monitoring
    - Disabled automatic public IP assignment in subnets (MapPublicIpOnLaunch: false)
 
 3. **OpenSearch Domain Security**
@@ -22,9 +22,9 @@ This document outlines the security improvements made to address the issues iden
    - For more information on OpenSearch security best practices, see: https://opensearch.org/docs/latest/security/index/ and https://docs.aws.amazon.com/opensearch-service/latest/developerguide/security.html
 
 4. **Shell Scripting Practices**
-   - Added proper quoting around all variables to prevent command injection
+   - Proper quoting around all variables to prevent command injection
    - Improved error handling and validation
-   - Added descriptive comments and usage information
+   - Descriptive comments and usage information
 
 ## Detailed Changes
 
@@ -232,12 +232,10 @@ fi
 
 ## How to Use the Secure Templates and Scripts
 
-The secure versions of the templates and scripts are provided with the `-secure` suffix. To use them:
-
 1. For CloudFormation templates:
    ```
    aws cloudformation create-stack --stack-name opensearch-benchmark \
-     --template-body file://templates/opensearch-benchmark-cfn-secure.yaml \
+     --template-body file://templates/opensearch-benchmark-cfn.yaml \
      --parameters ParameterKey=AllowedSSHCIDR,ParameterValue=YOUR_IP_CIDR \
                   ParameterKey=AllowEC2InstanceConnect,ParameterValue=true
    ```
@@ -246,12 +244,12 @@ The secure versions of the templates and scripts are provided with the `-secure`
 
 2. For shell scripts:
    ```
-   ./scripts/run-benchmark-secure.sh --endpoint https://your-opensearch-endpoint
+   ./scripts/run-benchmark.sh --endpoint https://your-opensearch-endpoint
    ```
 
 ## Security Considerations
 
-The security improvements outlined in this document address specific issues identified in the security scan and implement several AWS security best practices. The changes focus on:
+The security improvements outlined in this document implements several AWS security best practices. The changes focus on:
 
 1. Better documentation and tighter controls for security groups
 2. Strengthened VPC configuration with flow logs and proper subnet settings
