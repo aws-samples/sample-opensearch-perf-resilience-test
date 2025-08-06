@@ -1,6 +1,8 @@
 # OpenSearch Benchmark Images
 
-This directory should contain the following images extracted from the "OpenSearch benchmark setup & monitoring.docx" document:
+> **DISCLAIMER**: The images and documentation provided here are samples for educational and testing purposes only. Users must perform their own security review and due diligence before deploying any code or configurations to production environments.
+
+This directory contains the "OpenSearch benchmark setup & monitoring.docx" document with before and after images demonstrating the performance and resilience characteristics of OpenSearch deployments. The following images should be extracted from this document:
 
 ## Performance Metrics Images
 
