@@ -434,6 +434,9 @@ These visualizations help in understanding:
 
 > **Note:** To add these images to your repository, extract them from the "OpenSearch benchmark setup & monitoring.docx" document and place them in the `images` directory. See the README.md file in the images directory for detailed instructions.
 
+## Contributors
+Qais Poonawala, Rajat Chauhan, Bhaskar Pathak
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
